@@ -2,7 +2,21 @@ import type { DatabaseSync } from "node:sqlite";
 import { CHANNELS, decideOrigin } from "./decide.ts";
 import type { Decision, Touch } from "./decide.ts";
 
-export type Outcome = { status: 200 | 201 | 400; body: unknown };
+export type Outcome = { status: 200 | 201 | 400 | 409; body: unknown };
+
+// BEGIN IMMEDIATE: a checagem do id já visto e a gravação são um passo só,
+// também entre processos no mesmo arquivo.
+function transaction<T>(db: DatabaseSync, work: () => T): T {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = work();
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
 
 function text(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -25,15 +39,30 @@ export function recordTouch(db: DatabaseSync, input: Record<string, unknown>): O
   if (!channel) return { status: 400, body: { error: "canal desconhecido" } };
   if (!openedAt) return { status: 400, body: { error: "opened_at inválido" } };
 
-  // O mesmo tid é a mesma abertura: a chave primária impede a segunda linha.
-  const existing = db.prepare("SELECT * FROM touches WHERE tid = ?").get(tid) as TouchRow | undefined;
-  if (existing) return { status: 200, body: existing };
-
-  db.prepare(
-    `INSERT INTO touches (tid, device_id, channel, campaign_id, referrer_id, opened_at)
-     VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (tid) DO NOTHING`,
-  ).run(tid, deviceId, channel, text(input.campaign_id), text(input.referrer_id), openedAt);
-  return { status: 201, body: db.prepare("SELECT * FROM touches WHERE tid = ?").get(tid) };
+  const touch: TouchRow = {
+    tid,
+    device_id: deviceId,
+    channel,
+    campaign_id: text(input.campaign_id),
+    referrer_id: text(input.referrer_id),
+    opened_at: openedAt,
+  };
+  return transaction(db, (): Outcome => {
+    // O mesmo tid com o mesmo conteúdo é a mesma abertura: 200, sem segunda
+    // linha. Com outro aparelho, canal, campanha, indicação ou horário é outro
+    // toque usando um tid já gasto: 409, e o toque original não muda.
+    const existing = db.prepare("SELECT * FROM touches WHERE tid = ?").get(tid) as TouchRow | undefined;
+    if (existing) {
+      const same = (Object.keys(touch) as Array<keyof TouchRow>).every((key) => existing[key] === touch[key]);
+      if (!same) return { status: 409, body: { error: "tid já registrado com outro aparelho ou conteúdo", tid } };
+      return { status: 200, body: existing };
+    }
+    db.prepare(
+      `INSERT INTO touches (tid, device_id, channel, campaign_id, referrer_id, opened_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(touch.tid, touch.device_id, touch.channel, touch.campaign_id, touch.referrer_id, touch.opened_at);
+    return { status: 201, body: touch };
+  });
 }
 
 export function recordSignup(db: DatabaseSync, input: Record<string, unknown>): Outcome {
@@ -44,23 +73,38 @@ export function recordSignup(db: DatabaseSync, input: Record<string, unknown>): 
   if (!creatorId) return { status: 400, body: { error: "creator_id é obrigatório" } };
   if (!signedUpAt) return { status: 400, body: { error: "signed_up_at inválido" } };
 
-  // Cadastro repetido devolve a decisão já gravada, sem recalcular.
-  const existing = db.prepare("SELECT * FROM signups WHERE creator_id = ?").get(creatorId) as
-    | { device_id: string; signed_up_at: string; decision_json: string }
-    | undefined;
-  if (existing) {
-    return {
-      status: 200,
-      body: { creator_id: creatorId, device_id: existing.device_id, signed_up_at: existing.signed_up_at, ...(JSON.parse(existing.decision_json) as Decision) },
-    };
-  }
+  return transaction(db, (): Outcome => {
+    // Cadastro repetido igual devolve a decisão já gravada, sem recalcular. O
+    // mesmo criador com outro aparelho ou instante é conflito: a origem gravada
+    // não é trocada por um replay diferente.
+    const existing = db.prepare("SELECT * FROM signups WHERE creator_id = ?").get(creatorId) as
+      | { device_id: string; signed_up_at: string; decision_json: string }
+      | undefined;
+    if (existing) {
+      if (existing.device_id !== deviceId || existing.signed_up_at !== signedUpAt) {
+        return { status: 409, body: { error: "criador já cadastrado com outro aparelho ou instante", creator_id: creatorId } };
+      }
+      return {
+        status: 200,
+        body: {
+          creator_id: creatorId,
+          device_id: existing.device_id,
+          signed_up_at: existing.signed_up_at,
+          ...(JSON.parse(existing.decision_json) as Decision),
+        },
+      };
+    }
 
-  const touches = db
-    .prepare("SELECT tid, channel, campaign_id, referrer_id, opened_at FROM touches WHERE device_id = ?")
-    .all(deviceId) as Touch[];
-  const decision = decideOrigin(touches, signedUpAt);
-  db.prepare(
-    "INSERT INTO signups (creator_id, device_id, signed_up_at, decision_json) VALUES (?, ?, ?, ?)",
-  ).run(creatorId, deviceId, signedUpAt, JSON.stringify(decision));
-  return { status: 201, body: { creator_id: creatorId, device_id: deviceId, signed_up_at: signedUpAt, ...decision } };
+    const touches = db
+      .prepare("SELECT tid, channel, campaign_id, referrer_id, opened_at FROM touches WHERE device_id = ?")
+      .all(deviceId) as Touch[];
+    const decision = decideOrigin(touches, signedUpAt);
+    db.prepare("INSERT INTO signups (creator_id, device_id, signed_up_at, decision_json) VALUES (?, ?, ?, ?)").run(
+      creatorId,
+      deviceId,
+      signedUpAt,
+      JSON.stringify(decision),
+    );
+    return { status: 201, body: { creator_id: creatorId, device_id: deviceId, signed_up_at: signedUpAt, ...decision } };
+  });
 }
