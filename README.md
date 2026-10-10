@@ -16,7 +16,8 @@ O app lê `src`, `cid`/`ref` e `tid` e grava a abertura em `POST /touches`.
 
 ## Regras
 
-- `POST /touches` `{tid, device_id, channel, campaign_id, referrer_id, opened_at}`. O mesmo `tid` responde 200 e não cria outra linha. Canal fora de `campaign`, `referral`, `community` → 400.
+- `POST /touches` `{tid, device_id, channel, campaign_id, referrer_id, opened_at}`. O mesmo `tid` com o mesmo conteúdo (inclusive o instante escrito em outro fuso) responde 200 e não cria outra linha. O mesmo `tid` em outro aparelho ou com outro canal, campanha, indicação ou horário → 409, e o toque original não muda. Canal fora de `campaign`, `referral`, `community` → 400.
+- Cadastro repetido igual devolve a decisão gravada (200). O mesmo `creator_id` com outro aparelho ou instante → 409.
 - `POST /signups` `{device_id, creator_id, signed_up_at}`. `signed_up_at` é o relógio do cadastro.
 - Janela: 7 dias contados do menor `opened_at` daquele aparelho.
 - Elegível: `opened_at <= signed_up_at` e `opened_at <= primeira_abertura + 7 dias`.
@@ -97,8 +98,8 @@ Toque que atravessa aparelho.
 
 Comece por `src/decide.ts`, uma função pura que recebe os toques do aparelho e o instante do cadastro. A janela de 7 dias conta da primeira abertura daquele aparelho, não do cadastro. Elegível é o toque aberto até o cadastro e dentro da janela; vence o de maior `opened_at`, e empate de horário vai para `campaign` > `referral` > `community`, depois `tid` menor. Sem elegível, o canal é `organic` com motivo explícito. A resposta lista todos os toques, ganhos e perdidos, cada um com o motivo, então suporte e marketing leem por que um link não levou o cadastro. O mesmo `tid` não duplica: chave primária e checagem antes do insert.
 
-Testes: `npm test` com 7 passando, `npm run typecheck` sem erro. O exemplo deste README é o request do teste da janela.
+Testes: `npm test` com 11 passando, `npm run typecheck` sem erro. O exemplo deste README é o request do teste da janela.
 
 Ficou de fora: toque que atravessa aparelho.
 
-IA: código, testes e README escritos com assistente de código (Claude Code), a partir de um plano com as regras do desafio. O assistente rodou os testes e o typecheck e colou a resposta real acima.
+IA: código, testes e README escritos com assistente de código (Claude Code), a partir de um plano com as regras do desafio. A separação entre replay e conflito veio de programação em pares: o Codex auditou a entrega e reproduziu o caso do tid reaproveitado; o Claude Code escreveu os testes, corrigiu e publicou.
