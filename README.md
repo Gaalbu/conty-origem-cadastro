@@ -35,7 +35,7 @@ O app lê `src`, `cid`/`ref` e `tid` e grava a abertura em `POST /touches`.
 
 ## Como rodar
 
-Node 22 ou maior.
+Node 22.13 ou maior (primeira versão com `node:sqlite` sem flag).
 
 ```bash
 npm install
