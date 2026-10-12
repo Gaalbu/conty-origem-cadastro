@@ -34,6 +34,8 @@ O app lê `src`, `cid`/`ref` e `tid` e grava a abertura em `POST /touches`.
 | elegível mais antigo | `há um toque elegível mais recente` |
 | ninguém elegível | canal `organic`, `nenhum toque elegível antes do cadastro dentro da janela de 7 dias contada da primeira abertura` |
 
+**Entrada:** corpo precisa ser `application/json` (senão 415), JSON válido e objeto (senão 400) e ter até 64 KB (senão 413). Campo fora do contrato da rota → 400 com o nome do campo. Erro inesperado vira `500 {"error":"erro interno"}`, sem stack na resposta.
+
 ## Como rodar
 
 Node 22.13 ou maior (primeira versão com `node:sqlite` sem flag).
@@ -98,7 +100,7 @@ Toque que atravessa aparelho.
 
 Comece por `src/decide.ts`, uma função pura que recebe os toques do aparelho e o instante do cadastro. A janela de 7 dias conta da primeira abertura daquele aparelho, não do cadastro. Elegível é o toque aberto até o cadastro e dentro da janela; vence o de maior `opened_at`, e empate de horário vai para `campaign` > `referral` > `community`, depois `tid` menor. Sem elegível, o canal é `organic` com motivo explícito. A resposta lista todos os toques, ganhos e perdidos, cada um com o motivo, então suporte e marketing leem por que um link não levou o cadastro. O mesmo `tid` não duplica: chave primária e checagem antes do insert.
 
-Testes: `npm test` com 11 passando, `npm run typecheck` sem erro. O exemplo deste README é o request do teste da janela.
+Testes: `npm test` com 16 passando, `npm run typecheck` sem erro. O exemplo deste README é o request do teste da janela.
 
 Ficou de fora: toque que atravessa aparelho.
 
