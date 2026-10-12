@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { CHANNELS, decideOrigin } from "./decide.ts";
+import { parseLink } from "./link.ts";
 import type { Decision, Touch } from "./decide.ts";
 
 export type Outcome = { status: 200 | 201 | 400 | 409; body: unknown };
@@ -29,7 +30,21 @@ function instant(value: unknown): string | null {
 
 type TouchRow = Touch & { device_id: string };
 
-export function recordTouch(db: DatabaseSync, input: Record<string, unknown>): Outcome {
+// O app pode mandar o link inteiro que abriu, em vez dos campos já separados.
+function fromLink(input: Record<string, unknown>): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
+  if (input.link === undefined) return { ok: true, value: input };
+  if (typeof input.link !== "string") return { ok: false, error: "link deve ser texto" };
+  const mixed = ["tid", "channel", "campaign_id", "referrer_id"].find((key) => input[key] !== undefined);
+  if (mixed) return { ok: false, error: `mande link ou ${mixed}, não os dois` };
+  const parsed = parseLink(input.link);
+  if ("error" in parsed) return { ok: false, error: parsed.error };
+  return { ok: true, value: { ...input, ...parsed } };
+}
+
+export function recordTouch(db: DatabaseSync, raw: Record<string, unknown>): Outcome {
+  const link = fromLink(raw);
+  if (!link.ok) return { status: 400, body: { error: link.error } };
+  const input = link.value;
   const tid = text(input.tid);
   const deviceId = text(input.device_id);
   const channel = CHANNELS.find((c) => c === input.channel);
@@ -98,7 +113,10 @@ export function recordSignup(db: DatabaseSync, input: Record<string, unknown>): 
     const touches = db
       .prepare("SELECT tid, channel, campaign_id, referrer_id, opened_at FROM touches WHERE device_id = ?")
       .all(deviceId) as Touch[];
-    const decision = decideOrigin(touches, signedUpAt);
+    const install = db.prepare("SELECT first_open_at FROM installs WHERE device_id = ?").get(deviceId) as
+      | { first_open_at: string }
+      | undefined;
+    const decision = decideOrigin(touches, signedUpAt, install?.first_open_at);
     db.prepare("INSERT INTO signups (creator_id, device_id, signed_up_at, decision_json) VALUES (?, ?, ?, ?)").run(
       creatorId,
       deviceId,
@@ -106,5 +124,20 @@ export function recordSignup(db: DatabaseSync, input: Record<string, unknown>): 
       JSON.stringify(decision),
     );
     return { status: 201, body: { creator_id: creatorId, device_id: deviceId, signed_up_at: signedUpAt, ...decision } };
+  });
+}
+
+// Primeira abertura do app no aparelho: início da janela de 7 dias. Repetir o
+// registro não muda o horário gravado.
+export function recordInstall(db: DatabaseSync, input: Record<string, unknown>): Outcome {
+  const deviceId = text(input.device_id);
+  const firstOpenAt = instant(input.first_open_at);
+  if (!deviceId) return { status: 400, body: { error: "device_id é obrigatório" } };
+  if (!firstOpenAt) return { status: 400, body: { error: "first_open_at inválido" } };
+  return transaction(db, (): Outcome => {
+    const existing = db.prepare("SELECT * FROM installs WHERE device_id = ?").get(deviceId);
+    if (existing) return { status: 200, body: existing };
+    db.prepare("INSERT INTO installs (device_id, first_open_at) VALUES (?, ?)").run(deviceId, firstOpenAt);
+    return { status: 201, body: { device_id: deviceId, first_open_at: firstOpenAt } };
   });
 }
