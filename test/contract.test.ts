@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.ts";
 import { openDatabase } from "../src/db.ts";
@@ -77,4 +81,34 @@ describe("contrato do link e da primeira abertura", () => {
     const body = await signup({ device_id: "dev_2", creator_id: "crt_b", signed_up_at: "2026-06-04T00:00:00.000Z" });
     expect(body.window).toMatchObject({ starts_at: "2026-06-03T00:00:00.000Z", measured_from: "first_touch" });
   });
+});
+
+describe("mesmo clique enviado por várias conexões ao mesmo tempo", () => {
+  it("6 threads com o mesmo tid gravam um toque só", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "origem-"));
+    const path = join(dir, "shared.sqlite");
+    try {
+      const db = openDatabase(path);
+      const flags = new Int32Array(new SharedArrayBuffer(8));
+      const touch = { link: "https://app.conty.com/join?src=campaign&cid=cmp_verao&tid=clk_dup", device_id: "dev_1", opened_at: "2026-06-01T10:00:00.000Z" };
+      const results = Array.from({ length: 6 }, () => {
+        const worker = new Worker(new URL("./post-worker.ts", import.meta.url), {
+          workerData: { dbPath: path, flags, route: "/touches", body: touch },
+          execArgv: ["--experimental-strip-types", "--disable-warning=ExperimentalWarning"],
+        });
+        return new Promise<number>((resolve, reject) => {
+          worker.once("message", resolve);
+          worker.once("error", reject);
+        });
+      });
+      while (Atomics.load(flags, 1) < 6) await new Promise((resolve) => setTimeout(resolve, 5));
+      Atomics.store(flags, 0, 1);
+      Atomics.notify(flags, 0);
+      expect((await Promise.all(results)).sort()).toEqual([200, 200, 200, 200, 200, 201]);
+      expect((db.prepare("SELECT COUNT(*) AS n FROM touches").get() as { n: number }).n).toBe(1);
+      db.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
