@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { body, BodyError, MAX_BODY_BYTES } from "./body.ts";
-import { recordSignup, recordTouch } from "./origin.ts";
+import { recordInstall, recordSignup, recordTouch } from "./origin.ts";
 
 export function createApp(db: DatabaseSync) {
   const app = new Hono();
@@ -15,8 +15,13 @@ export function createApp(db: DatabaseSync) {
     return c.json({ error: "erro interno" }, 500);
   });
 
+  app.post("/installs", async (c) => {
+    const outcome = recordInstall(db, await body(c, ["device_id", "first_open_at"]));
+    return c.json(outcome.body, outcome.status);
+  });
+
   app.post("/touches", async (c) => {
-    const outcome = recordTouch(db, await body(c, ["tid", "device_id", "channel", "campaign_id", "referrer_id", "opened_at"]));
+    const outcome = recordTouch(db, await body(c, ["tid", "device_id", "channel", "campaign_id", "referrer_id", "opened_at", "link"]));
     return c.json(outcome.body, outcome.status);
   });
 

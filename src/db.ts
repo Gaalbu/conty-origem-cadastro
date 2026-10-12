@@ -1,6 +1,11 @@
 import { DatabaseSync } from "node:sqlite";
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS installs (
+  device_id TEXT PRIMARY KEY,
+  first_open_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS touches (
   tid TEXT PRIMARY KEY,
   device_id TEXT NOT NULL,
