@@ -12,13 +12,20 @@ https://app.conty.com/join?src=referral&ref=crt_ana&tid=clk_02
 https://app.conty.com/join?src=community&cid=comunidade_sp&tid=clk_03
 ```
 
-O app lê `src`, `cid`/`ref` e `tid` e grava a abertura em `POST /touches`.
+O contrato tem três passos:
+
+1. **O link carrega a origem.** `src` (canal), `cid` (campanha ou comunidade), `ref` (quem indicou) e `tid` (id do clique). O webview não manda referrer, então o link é a única fonte. Indicação exige `ref`; campanha e comunidade exigem `cid`; link sem `src` conhecido ou sem `tid` → 400.
+2. **O app grava a primeira abertura.** `POST /installs {device_id, first_open_at}`. Esse instante é o início da janela de 7 dias. Repetir o registro não move o horário.
+3. **O app grava cada abertura de link.** `POST /touches {link, device_id, opened_at}` com o link inteiro (o servidor extrai os campos, em `src/link.ts`), ou com os campos já separados. Os dois juntos → 400.
+
+O cadastro consome os toques do aparelho e grava a decisão com a janela usada (`window`) e a versão da regra (`rule_version`).
 
 ## Regras
 
 - `POST /touches` `{tid, device_id, channel, campaign_id, referrer_id, opened_at}`. O mesmo `tid` com o mesmo conteúdo (inclusive o instante escrito em outro fuso) responde 200 e não cria outra linha. O mesmo `tid` em outro aparelho ou com outro canal, campanha, indicação ou horário → 409, e o toque original não muda. Canal fora de `campaign`, `referral`, `community` → 400.
 - Cadastro repetido igual devolve a decisão gravada (200). O mesmo `creator_id` com outro aparelho ou instante → 409.
 - `POST /signups` `{device_id, creator_id, signed_up_at}`. `signed_up_at` é o relógio do cadastro.
+- Janela: começa na primeira abertura registrada em `/installs`. Se o aparelho não registrou, começa no primeiro toque dele, e a resposta diz qual foi a origem do início (`measured_from`: `install` ou `first_touch`). Toque no último milissegundo da janela ainda vale.
 - Janela: 7 dias contados do menor `opened_at` daquele aparelho.
 - Elegível: `opened_at <= signed_up_at` e `opened_at <= primeira_abertura + 7 dias`.
 - Vencedor: o elegível de maior `opened_at`. Empate de horário: `campaign` > `referral` > `community`. Novo empate: `tid` menor.
@@ -88,9 +95,29 @@ Resposta do cadastro, `201`:
     { "tid": "clk_01", "channel": "campaign", "campaign_id": "cmp_verao", "referrer_id": null,
       "opened_at": "2026-06-09T00:00:01.000Z", "won": false,
       "reason": "fora da janela de 7 dias contada da primeira abertura" }
-  ]
+  ],
+  "window": { "starts_at": "2026-06-01T00:00:00.000Z", "ends_at": "2026-06-08T00:00:00.000Z", "measured_from": "first_touch" },
+  "rule_version": "origem-v2"
 }
 ```
+
+## Critérios do enunciado → testes
+
+| Critério ou entrega | Teste |
+| --- | --- |
+| Sem origem fica orgânico com motivo | `cadastro sem toque é organic com motivo e lista vazia`, `toque só depois do cadastro não vira origem: organic` |
+| O mesmo clique não cria duas origens | `o mesmo tid duas vezes vira um toque só no cadastro`, `6 threads com o mesmo tid gravam um toque só` |
+| Toque fora da janela ou depois do cadastro não vence | `janela conta da primeira abertura: …`, `a janela conta da primeira abertura do app, não do primeiro toque` |
+| Janela explícita | campo `window` na resposta; `toque no último milissegundo da janela ainda vale` |
+| Auditar por que o cadastro recebeu aquela origem | `touches[]` com `won` e `reason`, mais `window` e `rule_version` |
+| Dois links e empate de horário | `indicação mais recente vence a comunidade aberta antes`, `empate de horário entre indicação e campanha fica com a campanha` |
+| O que viaja no link | `lê src, cid, ref e tid dos links…`, `o app manda o link inteiro e o cadastro usa o que veio nele` |
+
+## Decisões que eu deixaria diferentes com mais tempo
+
+- **Redirecionador próprio.** Hoje o app manda o link que abriu. Um `/l/…` do servidor gravaria o clique antes do redirect e recusaria `tid` que ele não emitiu, fechando a porta para origem forjada.
+- **Primeira abertura offline.** O app informa `first_open_at`; se o relógio do aparelho estiver errado, a janela erra junto. Com mais tempo, guardaria também o horário do servidor e mostraria a divergência.
+- **Toque que atravessa aparelho**, que deixei de fora.
 
 ## Ficou de fora
 
@@ -100,7 +127,7 @@ Toque que atravessa aparelho.
 
 Comece por `src/decide.ts`, uma função pura que recebe os toques do aparelho e o instante do cadastro. A janela de 7 dias conta da primeira abertura daquele aparelho, não do cadastro. Elegível é o toque aberto até o cadastro e dentro da janela; vence o de maior `opened_at`, e empate de horário vai para `campaign` > `referral` > `community`, depois `tid` menor. Sem elegível, o canal é `organic` com motivo explícito. A resposta lista todos os toques, ganhos e perdidos, cada um com o motivo, então suporte e marketing leem por que um link não levou o cadastro. O mesmo `tid` não duplica: chave primária e checagem antes do insert.
 
-Testes: `npm test` com 16 passando, `npm run typecheck` sem erro. O exemplo deste README é o request do teste da janela.
+Testes: `npm test` com 29 passando, `npm run typecheck` sem erro. O exemplo deste README é o request do teste da janela.
 
 Ficou de fora: toque que atravessa aparelho.
 
