@@ -127,7 +127,7 @@ Toque que atravessa aparelho.
 
 Comece por `src/decide.ts`, uma função pura que recebe os toques do aparelho e o instante do cadastro. A janela de 7 dias conta da primeira abertura daquele aparelho, não do cadastro. Elegível é o toque aberto até o cadastro e dentro da janela; vence o de maior `opened_at`, e empate de horário vai para `campaign` > `referral` > `community`, depois `tid` menor. Sem elegível, o canal é `organic` com motivo explícito. A resposta lista todos os toques, ganhos e perdidos, cada um com o motivo, então suporte e marketing leem por que um link não levou o cadastro. O mesmo `tid` não duplica: chave primária e checagem antes do insert.
 
-Testes: `npm test` com 29 passando, `npm run typecheck` sem erro. O exemplo deste README é o request do teste da janela.
+Testes: `npm test` com 30 passando, `npm run typecheck` sem erro. O exemplo deste README é o request do teste da janela.
 
 Ficou de fora: toque que atravessa aparelho.
 

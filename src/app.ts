@@ -30,5 +30,7 @@ export function createApp(db: DatabaseSync) {
     return c.json(outcome.body, outcome.status);
   });
 
+  app.notFound((c) => c.json({ error: "rota não encontrada" }, 404));
+
   return app;
 }
